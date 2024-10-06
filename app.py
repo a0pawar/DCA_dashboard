@@ -36,6 +36,7 @@ df_long['Date'] = pd.to_datetime(df_long['Date'])
 
 # Initialize the Dash app
 app = Dash(__name__)
+server = app.server
 
 # Get the min and max dates for the slider
 min_date = df_long['Date'].min()
