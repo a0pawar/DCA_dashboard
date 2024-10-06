@@ -5,7 +5,7 @@ from dash import Dash, dcc, html, dash_table
 from dash.dependencies import Input, Output
 
 # Load and preprocess data
-df = pd.read_excel('New_DCA_RP_till_OCT_2024_Rebased.xlsx', sheet_name="State_Consolidated_TimeSeries").iloc[54:76, 1:].T.reset_index()
+df = pd.read_excel('dca_data.xlsx', sheet_name="State_Consolidated_TimeSeries").iloc[54:76, 1:].T.reset_index()
 cols = df.iloc[0, 1:]
 index = df.iloc[1:, 0]
 df = df.iloc[1:, 1:]
