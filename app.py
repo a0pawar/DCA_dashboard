@@ -3,45 +3,63 @@ import numpy as np
 import plotly.express as px
 from dash import Dash, dcc, html, dash_table
 from dash.dependencies import Input, Output
-
-# Load and preprocess data
-df = pd.read_excel('dca_data.xlsx', sheet_name="State_Consolidated_TimeSeries").iloc[54:76, 1:].T.reset_index()
-cols = df.iloc[0, 1:]
-index = df.iloc[1:, 0]
-df = df.iloc[1:, 1:]
-df.columns = cols
-df.index = index
-df = df.dropna()
-df.index = pd.to_datetime(df.index)
-df = df[~df.index.weekday.isin([5, 6])]
-df = df.resample("W-FRI").mean()
-
-# Melt the dataframe
-df_long = df.reset_index().melt(
-    id_vars=['index'],
-    value_vars=['Rice', 'Wheat', 'Atta(wheat)', 'Gram Dal', 'Tur/Arhar Dal', 'Urad Dal',
-                'Moong Dal', 'Masoor Dal', 'Ground Nut Oil', 'Mustard Oil', 'Vanaspati',
-                'Soya Oil', 'Sunflower Oil', 'Palm Oil', 'Potato', 'Onion', 'Tomato',
-                'Sugar', 'Gur', 'Milk', 'Tea', 'Salt'],
-    var_name='Commodity',
-    value_name='Price'
-)
-
-# Rename the 'index' column to 'Date'
-df_long = df_long.rename(columns={'index': 'Date'})
-
-# Sort and reset the index
-df_long = df_long.sort_values(['Date', 'Commodity']).reset_index(drop=True)
-df_long['Date'] = pd.to_datetime(df_long['Date'])
+from flask_caching import Cache
 
 # Initialize the Dash app
 app = Dash(__name__)
 server = app.server
 
+# Configure cache
+cache = Cache(app.server, config={
+    'CACHE_TYPE': 'simple',  # You can use 'redis' or 'filesystem' for production
+    'CACHE_DEFAULT_TIMEOUT': 300  # Cache timeout in seconds (5 minutes)
+})
+
+# Load and preprocess data (Cached function)
+@cache.memoize()
+def load_data():
+    df = pd.read_excel('dca_data.xlsx', sheet_name="State_Consolidated_TimeSeries").iloc[54:76, 1:].T.reset_index()
+    cols = df.iloc[0, 1:]
+    index = df.iloc[1:, 0]
+    df = df.iloc[1:, 1:]
+    df.columns = cols
+    df.index = index
+    df = df.dropna()
+    df.index = pd.to_datetime(df.index)
+    df = df[~df.index.weekday.isin([5, 6])]
+    df = df.resample("W-FRI").mean()
+
+    # Melt the dataframe
+    df_long = df.reset_index().melt(
+        id_vars=['index'],
+        value_vars=['Rice', 'Wheat', 'Atta(wheat)', 'Gram Dal', 'Tur/Arhar Dal', 'Urad Dal',
+                    'Moong Dal', 'Masoor Dal', 'Ground Nut Oil', 'Mustard Oil', 'Vanaspati',
+                    'Soya Oil', 'Sunflower Oil', 'Palm Oil', 'Potato', 'Onion', 'Tomato',
+                    'Sugar', 'Gur', 'Milk', 'Tea', 'Salt'],
+        var_name='Commodity',
+        value_name='Price'
+    )
+
+    # Rename the 'index' column to 'Date'
+    df_long = df_long.rename(columns={'index': 'Date'})
+
+    # Sort and reset the index
+    df_long = df_long.sort_values(['Date', 'Commodity']).reset_index(drop=True)
+    df_long['Date'] = pd.to_datetime(df_long['Date'])
+
+    return df_long
+
+# Load data from cache
+df_long = load_data()
+
 # Get the min and max dates for the slider
 min_date = df_long['Date'].min()
 max_date = df_long['Date'].max()
+three_months_ago = max_date - pd.DateOffset(months=3)
 df_long['Days'] = (df_long['Date'] - min_date).dt.days
+
+# Filter the data for the last three months by default
+df_long_default = df_long[df_long['Date'] >= three_months_ago]
 
 # App layout
 app.layout = html.Div([
@@ -64,7 +82,7 @@ app.layout = html.Div([
                 id='date-slider',
                 min=0,
                 max=(max_date - min_date).days,
-                value=[0, (max_date - min_date).days],
+                value=[(three_months_ago - min_date).days, (max_date - min_date).days],
                 marks={0: min_date.strftime('%Y-%m-%d'), (max_date - min_date).days: max_date.strftime('%Y-%m-%d')},
                 step=1
             ),
@@ -130,9 +148,15 @@ def update_graph_and_table(selected_commodities, normalize, selected_date_range)
     start_date = min_date + pd.Timedelta(days=selected_date_range[0])
     end_date = min_date + pd.Timedelta(days=selected_date_range[1])
 
-    filtered_df_long = df_long[(df_long['Commodity'].isin(selected_commodities)) &
-                               (df_long['Date'] >= start_date) &
-                               (df_long['Date'] <= end_date)]
+    # Load full data only if the user expands the date range beyond the default
+    if start_date < three_months_ago:
+        filtered_df_long = df_long[(df_long['Commodity'].isin(selected_commodities)) &
+                                   (df_long['Date'] >= start_date) &
+                                   (df_long['Date'] <= end_date)]
+    else:
+        filtered_df_long = df_long_default[(df_long_default['Commodity'].isin(selected_commodities)) &
+                                           (df_long_default['Date'] >= start_date) &
+                                           (df_long_default['Date'] <= end_date)]
 
     if 'normalize' in normalize:
         normalized_df_list = []
