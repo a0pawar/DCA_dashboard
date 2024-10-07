@@ -63,7 +63,7 @@ df_long_default = df_long[df_long['Date'] >= three_months_ago]
 
 # App layout
 app.layout = html.Div([
-    html.H1("Commodity Price Evolution Dashboard", style={'textAlign': 'center', 'color': '#2C3E50', 'backgroundColor': '#FFF0F5', 'padding': '10px', 'margin': '0'}),
+    html.H1("Commodity Price Evolution Dashboard", style={'textAlign': 'center', 'color': '#2C3E50', 'backgroundColor': '#E6E6FA', 'padding': '10px', 'margin': '0'}),
 
     html.Div([
         html.Div([
@@ -91,14 +91,14 @@ app.layout = html.Div([
         ], style={'width': '60%', 'display': 'inline-block', 'padding': '10px'}),
 
         html.Div([
-            html.H3("Week-on-Week Momentum", style={'textAlign': 'center', 'color': '#2980B9', 'backgroundColor': '#FFF0F5', 'padding': '10px', 'margin': '0'}),
+            html.H3("Week-on-Week Momentum", style={'textAlign': 'center', 'color': '#2980B9', 'backgroundColor': '#E6E6FA', 'padding': '10px', 'margin': '0'}),
             dash_table.DataTable(
                 id='pct-change-table',
                 style_table={'overflowX': 'auto'},
                 style_cell={
                     'textAlign': 'center',
                     'padding': '5px',
-                    'backgroundColor': '#FFF0F5',
+                    'backgroundColor': '#E6E6FA',
                     'color': 'black',
                     'minWidth': '80px', 'width': '80px', 'maxWidth': '80px',
                     'overflow': 'hidden',
@@ -119,8 +119,8 @@ app.layout = html.Div([
                 ],
             )
         ], style={'width': '38%', 'display': 'inline-block', 'padding': '10px', 'borderLeft': '1px solid #BDC3C7'})
-    ], style={'display': 'flex', 'backgroundColor': '#FFF0F5', 'justifyContent': 'space-between'})
-], style={'backgroundColor': '#FFF0F5', 'padding': '10px'})
+    ], style={'display': 'flex', 'backgroundColor': '#E6E6FA', 'justifyContent': 'space-between'})
+], style={'backgroundColor': '#E6E6FA', 'padding': '10px'})
 
 # Callback to update the slider output
 @app.callback(
