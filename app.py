@@ -4,16 +4,17 @@ import plotly.express as px
 from dash import Dash, dcc, html, dash_table
 from dash.dependencies import Input, Output
 from flask_caching import Cache
+import json
+import requests
+from bs4 import BeautifulSoup
+import re
 
 # Initialize the Dash app
 app = Dash(__name__)
 server = app.server
 
 # Configure cache
-cache = Cache(app.server, config={
-    'CACHE_TYPE': 'simple',  # You can use 'redis' or 'filesystem' for production
-    'CACHE_DEFAULT_TIMEOUT': 300  # Cache timeout in seconds (5 minutes)
-})
+cache = Cache(app.server, config={'CACHE_TYPE': 'simple', 'CACHE_DEFAULT_TIMEOUT': 300})
 
 # Load and preprocess data (Cached function)
 @cache.memoize()
@@ -29,7 +30,6 @@ def load_data():
     df = df[~df.index.weekday.isin([5, 6])]
     df = df.resample("W-FRI").mean()
 
-    # Melt the dataframe
     df_long = df.reset_index().melt(
         id_vars=['index'],
         value_vars=['Rice', 'Wheat', 'Atta(wheat)', 'Gram Dal', 'Tur/Arhar Dal', 'Urad Dal',
@@ -40,10 +40,7 @@ def load_data():
         value_name='Price'
     )
 
-    # Rename the 'index' column to 'Date'
     df_long = df_long.rename(columns={'index': 'Date'})
-
-    # Sort and reset the index
     df_long = df_long.sort_values(['Date', 'Commodity']).reset_index(drop=True)
     df_long['Date'] = pd.to_datetime(df_long['Date'])
 
@@ -61,68 +58,122 @@ df_long['Days'] = (df_long['Date'] - min_date).dt.days
 # Filter the data for the last three months by default
 df_long_default = df_long[df_long['Date'] >= three_months_ago]
 
+# Load the GeoJSON file for Indian states
+with open('india_states.geojson', 'r') as f:
+    india_geojson = json.load(f)
+
+# Function to fetch and process rainfall data
+@cache.memoize()
+def fetch_rainfall_data(rainfall_type):
+    url = f"https://mausam.imd.gov.in/responsive/rainfallinformation_state.php?msg={rainfall_type}"
+    response = requests.get(url)
+    html = response.text
+
+    soup = BeautifulSoup(html, 'html.parser')
+    script_tag = soup.find('script', text=lambda t: t and 'var mapVar = AmCharts.parseGeoJSON' in t)
+    data_start = script_tag.string.index('"areas": [')
+    data_end = script_tag.string.index(']', data_start) + 1
+    json_data = script_tag.string[data_start:data_end]
+
+    json_data = json_data.replace('"areas": ', '')
+    json_data = re.sub(r'(\w+):', r'"\1":', json_data)
+    areas_data = json.loads(json_data)
+
+    rainfall_data = []
+    for area in areas_data:
+        if area['id'] and area['id'] != 'null':
+            state = area['title'].strip()
+            balloon_data = extract_data(area['balloonText'])
+            rainfall_data.append({
+                'state': state,
+                'actual': balloon_data['actual'],
+                'normal': balloon_data['normal'],
+                'deviation': balloon_data['deviation']
+            })
+
+    df = pd.DataFrame(rainfall_data)
+    df['state'] = df['state'].apply(lambda x: x.title().replace(" (Ut)", "").replace("&", "and") if "Jammu" in x else x.title().replace(" (Ut)", ""))
+    
+    return df
+
+# Helper function to extract data from the balloon text
+def extract_data(balloon_text):
+    actual = re.search(r'Actual : ([\d.]+) mm', balloon_text)
+    normal = re.search(r'Normal : ([\d.]+) mm', balloon_text)
+    departure = re.search(r'Departure : ([-\d]+)%', balloon_text)
+
+    return {
+        'actual': float(actual.group(1)) if actual else None,
+        'normal': float(normal.group(1)) if normal else None,
+        'deviation': int(departure.group(1)) if departure else None
+    }
+
 # App layout
 app.layout = html.Div([
-    html.H1("Commodity Price Evolution Dashboard", style={'textAlign': 'center', 'color': '#2C3E50', 'backgroundColor': '#E6E6FA', 'padding': '10px', 'margin': '0'}),
+    html.H1("Inflation Monitoring Dashboard", style={'textAlign': 'center', 'marginBottom': '20px'}),
+    dcc.Tabs([
+        dcc.Tab(label='DCA Retail Price Trends', children=[
+            html.Div([
+                html.Div([
+                    dcc.Dropdown(
+                        id='commodity-dropdown',
+                        options=[{'label': i, 'value': i} for i in df_long['Commodity'].unique()],
+                        value=['Tomato', 'Potato', 'Onion'],
+                        multi=True,
+                        style={'marginBottom': '10px'}
+                    ),
+                    dcc.Checklist(
+                        id='normalize-checkbox',
+                        options=[{'label': 'Normalize prices to 100', 'value': 'normalize'}],
+                        value=[],
+                        style={'marginBottom': '10px'}
+                    ),
+                    dcc.RangeSlider(
+                        id='date-slider',
+                        min=0,
+                        max=(max_date - min_date).days,
+                        value=[(three_months_ago - min_date).days, (max_date - min_date).days],
+                        marks={0: min_date.strftime('%Y-%m-%d'), (max_date - min_date).days: max_date.strftime('%Y-%m-%d')},
+                        step=1
+                    ),
+                    html.Div(id='slider-output-container', style={'marginTop': '10px'}),
+                    dcc.Graph(id='price-evolution-graph'),
+                ], style={'width': '60%', 'display': 'inline-block', 'verticalAlign': 'top'}),
+                html.Div([
+                    html.H3("Week-on-Week Momentum (%)", style={'textAlign': 'center'}),
+                    dash_table.DataTable(id='pct-change-table')
+                ], style={'width': '38%', 'display': 'inline-block', 'verticalAlign': 'top', 'marginLeft': '2%'})
+            ])
+        ]),
+        dcc.Tab(label='Rainfall Deviation', children=[
+            html.Div([
+                html.Label('Select Period:'),
+                dcc.Dropdown(
+                    id='rainfall-type-dropdown',
+                    options=[
+                        {'label': 'Daily', 'value': 'D'},
+                        {'label': 'Weekly', 'value': 'W'},
+                        {'label': 'Monthly', 'value': 'M'},
+                        {'label': 'Cumulative', 'value': 'C'}
+                    ],
+                    value='M',
+                    clearable=False,
+                    style={'width': '50%', 'marginBottom': '20px'}
+                ),
+            ]),
+            html.Div([
+                html.Div([
+                    dcc.Graph(id='rainfall-deviation-map')
+                ], style={'width': '60%', 'display': 'inline-block', 'verticalAlign': 'top'}),
+                html.Div([
+                    dash_table.DataTable(id='rainfall-table')
+                ], style={'width': '35%', 'display': 'inline-block', 'verticalAlign': 'top', 'marginLeft': '5%'})
+            ])
+        ])
+    ])
+])
 
-    html.Div([
-        html.Div([
-            dcc.Dropdown(
-                id='commodity-dropdown',
-                options=[{'label': i, 'value': i} for i in df_long['Commodity'].unique()],
-                value=[df_long['Commodity'].unique()[0]],
-                multi=True
-            ),
-            dcc.Checklist(
-                id='normalize-checkbox',
-                options=[{'label': 'Normalize prices to 100', 'value': 'normalize'}],
-                value=[]
-            ),
-            dcc.RangeSlider(
-                id='date-slider',
-                min=0,
-                max=(max_date - min_date).days,
-                value=[(three_months_ago - min_date).days, (max_date - min_date).days],
-                marks={0: min_date.strftime('%Y-%m-%d'), (max_date - min_date).days: max_date.strftime('%Y-%m-%d')},
-                step=1
-            ),
-            html.Div(id='slider-output-container'),
-            dcc.Graph(id='price-evolution-graph'),
-        ], style={'width': '60%', 'display': 'inline-block', 'padding': '10px'}),
-
-        html.Div([
-            html.H3("Week-on-Week Momentum", style={'textAlign': 'center', 'color': '#2980B9', 'backgroundColor': '#E6E6FA', 'padding': '10px', 'margin': '0'}),
-            dash_table.DataTable(
-                id='pct-change-table',
-                style_table={'overflowX': 'auto'},
-                style_cell={
-                    'textAlign': 'center',
-                    'padding': '5px',
-                    'backgroundColor': '#E6E6FA',
-                    'color': 'black',
-                    'minWidth': '80px', 'width': '80px', 'maxWidth': '80px',
-                    'overflow': 'hidden',
-                    'textOverflow': 'ellipsis',
-                },
-                style_header={
-                    'backgroundColor': '#2980B9',
-                    'color': 'white',
-                    'fontWeight': 'bold',
-                    'whiteSpace': 'normal',
-                    'height': 'auto',
-                },
-                style_data_conditional=[
-                    {
-                        'if': {'row_index': 'odd'},
-                        'backgroundColor': '#F8E0E6',
-                    }
-                ],
-            )
-        ], style={'width': '38%', 'display': 'inline-block', 'padding': '10px', 'borderLeft': '1px solid #BDC3C7'})
-    ], style={'display': 'flex', 'backgroundColor': '#E6E6FA', 'justifyContent': 'space-between'})
-], style={'backgroundColor': '#E6E6FA', 'padding': '10px'})
-
-# Callback to update the slider output
+# Callbacks for Commodity Price Evolution
 @app.callback(
     Output('slider-output-container', 'children'),
     [Input('date-slider', 'value')]
@@ -132,7 +183,6 @@ def update_slider_output(value):
     end_date = (min_date + pd.Timedelta(days=value[1])).strftime('%Y-%m-%d')
     return f'Selected date range: {start_date} to {end_date}'
 
-# Callback to update the graph and table
 @app.callback(
     [Output('price-evolution-graph', 'figure'),
      Output('pct-change-table', 'data'),
@@ -148,7 +198,6 @@ def update_graph_and_table(selected_commodities, normalize, selected_date_range)
     start_date = min_date + pd.Timedelta(days=selected_date_range[0])
     end_date = min_date + pd.Timedelta(days=selected_date_range[1])
 
-    # Load full data only if the user expands the date range beyond the default
     if start_date < three_months_ago:
         filtered_df_long = df_long[(df_long['Commodity'].isin(selected_commodities)) &
                                    (df_long['Date'] >= start_date) &
@@ -200,5 +249,50 @@ def update_graph_and_table(selected_commodities, normalize, selected_date_range)
 
     return fig, pct_change_table_data, pct_change_table_columns
 
+# Callbacks for Rainfall Deviation
+@app.callback(
+    [Output('rainfall-deviation-map', 'figure'),
+     Output('rainfall-table', 'data'),
+     Output('rainfall-table', 'columns')],
+    [Input('rainfall-type-dropdown', 'value')]
+)
+def update_rainfall_data(rainfall_type):
+    df = fetch_rainfall_data(rainfall_type)
+    
+    fig = px.choropleth(
+        df,
+        geojson=india_geojson,
+        locations='state',
+        featureidkey='properties.ST_NM',
+        color='deviation',
+        hover_name='state',
+        hover_data=['actual', 'normal'],
+        color_continuous_scale='Blues',
+        range_color=[-100, 100],
+        title='Rainfall Deviation from Normal'
+    )
+
+    fig.update_geos(fitbounds="locations", visible=False)
+    fig.update_layout(
+        title_font=dict(size=24, family='Arial', color='darkblue'),
+        title_x=0.5,
+        title_y=0.95,
+        margin={"r":0,"t":30,"l":0,"b":0},
+        height=600,
+        coloraxis_colorbar=dict(
+            title="Deviation (%)",  # Set your custom color bar title here
+            title_font=dict(size=14, family='Arial', color='darkblue')
+        )
+    )
+
+    columns = [
+        {"name": "State", "id": "state"},
+        {"name": "Actual (mm)", "id": "actual"},
+        {"name": "Normal (mm)", "id": "normal"},
+        {"name": "Deviation (%)", "id": "deviation"}
+    ]
+
+    return fig, df.to_dict('records'), columns
+
 if __name__ == '__main__':
-    app.run_server(debug=True, host='0.0.0.0', port=8050)
+    app.run_server(debug=True, host=0.0.0.0 ,port=8050)
