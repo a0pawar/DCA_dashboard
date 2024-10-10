@@ -5,3 +5,4 @@ plotly==5.24.1
 gunicorn
 openpyxl
 flask_caching
+beautifulsoup4
